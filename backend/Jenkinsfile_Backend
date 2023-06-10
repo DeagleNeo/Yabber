@@ -1,0 +1,125 @@
+pipeline {
+    agent any
+    environment {
+        ENVIRONMENT = 'UAT'
+        BRANCH = 'main'
+        TAG = "${ENVIRONMENT}-${env.BUILD_ID}"
+        TAGLATEST = "latest"
+        IMAGE1 = "${ECR_REPO}:${TAG}"
+        IMAGE2 = "${ECR_REPO}:latest"
+        PROJECT_ID = 'yabber-jr'
+        CLUSTER_NAME = 'yabber-cluster'
+        LOCATION = 'australia-southeast1-a'
+        S3_CREDENTIAL = 'S3'
+        S3_REGION = 'ap-southeast-2'
+        AWS_CREDENTIAL = 'S3'
+        CREDENTIALS_ECR_ID = 'aws_ecr'
+        CREDENTIALS_ECS_ID = 'AWS_ECS'
+        AWS_ECR_URL = 'https://077304981113.dkr.ecr.ap-southeast-2.amazonaws.com/yabber-uat'
+        ECR_REPO = '077304981113.dkr.ecr.ap-southeast-2.amazonaws.com/yabber-uat'
+        AWS_ECS_CLUSTER = 'yabber-cluster-pro'
+        AWS_ECS_SERVICE = 'yabber-service-pro'
+        AWS_ECR_REGION = 'ap-southeast-2'
+    }
+    options {
+        disableConcurrentBuilds()
+        durabilityHint('PERFORMANCE_OPTIMIZED') //MAX_SURVIVABILITY or SURVIVABLE_NONATOMIC
+    }
+    tools {terraform "Terraform"}
+    stages {
+
+        stage("create env") {
+            steps {
+                script {
+                    dir ("backend"){
+                        withCredentials([string(credentialsId:'mongo', variable:'mongourl')]) {
+                          sh "echo 'MONGODB_CONNECTION_URL= ${mongourl}' > .env "
+                        }
+                          sh "echo 'PORT= 3000' >> .env"
+                          sh "echo 'JWT_KEY=secret' >> .env"
+                          sh "echo 'TOKEN_EXPIRATION_TIME=7d' >> .env"
+                    }    
+                }
+            }
+
+        }
+
+        stage("Build image") {
+            steps {
+                echo "==============Building image=============="
+                script {
+                    dir("backend"){
+                        myapp = docker.build("${IMAGE1}","-t ${IMAGE2} .")
+                    }    
+                }
+            }
+        }
+
+        stage("Push image") {
+            steps {
+                script {
+                  //  echo "==============Pushing image to dockerhub=============="
+                  //  docker.withRegistry('https://registry.hub.docker.com', "${CREDENTIALS_DOCKERHUB_ID}") {
+                   //         myapp.push("${TAG}")
+                   // }
+                   sh 'rm -f ~/.dockercfg ~/.docker/config.json || true'
+                    echo "==============Pushing image to aws ecr =============="
+                        docker.withRegistry("${AWS_ECR_URL}", "ecr:ap-southeast-2:${AWS_CREDENTIAL}") {
+                            myapp.push("${TAG}")
+                            myapp.push('latest')
+                        }
+
+                }
+            }
+        }
+
+         stage ('infra') {
+            steps {
+                echo "AWS infra"
+                dir ('terraform/backend') {
+                    withAWS(credentials: S3_CREDENTIAL, region: S3_REGION) {
+                    sh '/usr/bin/terraform init'
+                    sh '/usr/bin/terraform apply --auto-approve -lock=false'
+                   // sh '/usr/bin/terraform destroy --auto-approve -lock=false'
+                   // AWS_ECS_CLUSTER = sh(returnStdout: true, script: "terraform output AWS_ECS_CLUSTER").trim()
+                   // AWS_ECS_SERVICE = sh(returnStdout: true, script: "terraform output AWS_ECS_SERVICE").trim()
+                   
+                    }
+                }
+            }
+
+        }
+
+        stage('Deploy in ECS') {
+            steps {
+                withAWS(credentials: AWS_CREDENTIAL) {
+                    script {
+                        // AWS CLI must be installed in the Jenkins server first. 
+                        // Below is used to upgrade/replace the existing service, which may be created manually or through terraform.
+                        echo "=========== Upgrade ECS cluster's service state with forceNewDeployment================="
+                        sh("/usr/local/bin/aws ecs update-service --cluster ${AWS_ECS_CLUSTER} --service ${AWS_ECS_SERVICE} --force-new-deployment >/dev/null")
+                    }
+
+                }
+            }
+        }
+
+         stage('clean up') {
+            steps {
+             cleanWs()
+            }
+
+        }
+
+    }
+    post {
+        success {
+            echo "WELL DONE!"
+           // bitbucketStatusNotify(buildState: 'SUCCESSFUL')
+        }
+        failure {
+            echo "FAILED"
+            // bitbucketStatusNotify(buildState: 'FAILED')
+        }
+    }
+}

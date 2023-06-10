@@ -1,0 +1,20 @@
+{
+  "name": "yabber",
+  "version": "1.0.0",
+  "description": "This is the version control for yabber.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+    },
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@bitbucket.org/tom_zhong/yabber.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://bitbucket.org/tom_zhong/yabber/issues"
+  },
+  "homepage": "https://bitbucket.org/tom_zhong/yabber#readme"
+}

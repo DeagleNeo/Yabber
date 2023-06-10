@@ -1,0 +1,112 @@
+pipeline {
+    agent {
+        docker {
+            image 'node:latest'
+            args '-u root:root'
+        }
+    }
+
+
+    environment {
+        HOME = '.'
+        ENVIRONMENT = 'uat'
+        S3_CREDENTIAL = 'S3'
+        S3_REGION = 'ap-southeast-2'
+        BUCKET_NAME = 's3://yabbertech.com'
+        DISTRIBUTION_ID = 'E2I6AFF0GG3A8K'
+        //WORKSPACE_PATH = '/var/lib/jenkins/workspace/yabbertech_frontend/frontend/build'
+        WORKSPACE_PATH = "${env.WORKSPACE}/frontend/build"
+       // CI = 'true'
+
+    }
+
+    stages {
+        stage ('infra') {
+            steps {
+                echo "AWS infra"
+                dir ('terraform/frontend') {
+                    withAWS(credentials: S3_CREDENTIAL, region: S3_REGION) {
+                    sh "apt update && apt install  software-properties-common gnupg2 curl -y"
+                    sh "curl https://apt.releases.hashicorp.com/gpg | gpg --dearmor > hashicorp.gpg && install -o root -g root -m 644 hashicorp.gpg /etc/apt/trusted.gpg.d/"
+                    sh 'apt-add-repository "deb [arch=amd64] https://apt.releases.hashicorp.com bullseye main"'
+                    sh "apt update && apt install terraform"
+                    sh 'terraform --version'
+                    sh 'terraform init'
+                    sh 'terraform apply -auto-approve -lock=false'
+                    //sh 'terraform destroy --auto-approve'
+                    }
+                }
+            }
+
+        }
+
+        stage ('install packages') {
+            steps {
+                echo "Installing packages ..."
+                dir ('frontend') {
+                    sh "echo 'REACT_APP_SERVER_ADD=https://backend.yabbertech.com' > .env "
+                    sh "echo 'PORT = 3000' >> .env "
+                    sh "echo 'env.REACT_APP_GIF_API_KEY' >> .env "
+                    sh "echo 'env.REACT_APP_FILESTACK_API_KEY' >> .env "
+                    //sh "echo 'REACT_APP_GIF_API_KEY=m8yzIu93oeRtdVbuSpMOd8TFfKCwnIED' >> .env "
+                    sh 'npm install --force'
+                }
+            }
+        }
+        stage ('Build') {
+            steps {
+                echo "Building..."
+                echo "Running job: ${env.JOB_NAME}\n Build:${env.BUILD_ID}\n Pipleline: ${env.RUN_DISPLAY_URL}"
+                dir('frontend') {
+                    sh 'npm run build'
+                }    
+            }
+        }
+        stage ('Install AWS CLI') {
+            when {
+                expression { currentBuild.result == null || currentBuild.result == 'SUCCESS'}
+            }
+            steps {
+                echo "Installing AWS CLI ..."
+                sh 'apt-get update'
+                sh 'apt install python3-pip -y'
+                sh 'pip3 install awscli'
+            }
+        }
+        stage ('Deploy to UAT') {
+            when {
+                expression { currentBuild.result == null || currentBuild.result == 'SUCCESS'}
+            }
+            steps {
+                deployToS3(environment)
+            }
+        }
+        stage ('Invalidation') {
+            when {
+                expression { currentBuild.result == null || currentBuild.result == 'SUCCESS'}
+            }
+            steps {
+                invalidation(environment)
+             }
+         }
+
+    }
+}
+
+def deployToS3(environment) {
+    echo 'Deploying to ' + environment + ' ...'
+    withAWS(credentials: S3_CREDENTIAL, region: S3_REGION) {
+        // Empty the UAT bucket
+        sh 'aws s3 rm "${BUCKET_NAME}" --recursive' // ${BUCKET_NAME} is also fine
+        // Copy the static files from workspace to the S3 bucket
+        sh 'aws s3 cp "${WORKSPACE_PATH}" "${BUCKET_NAME}" --recursive'
+    }
+}
+
+def invalidation(environment) {
+    echo 'Invalidaing the cache' + environment + '...'
+    withAWS(credentials: S3_CREDENTIAL, region: S3_REGION) {
+        // Empty the UAT bucket
+        sh "aws cloudfront create-invalidation --distribution-id ${DISTRIBUTION_ID} --paths '/*' " // ${BUCKET_NAME} is also fine
+    }
+}
